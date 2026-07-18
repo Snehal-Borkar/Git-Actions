@@ -1,55 +1,11 @@
 name: Deploy Lambda
 
 on:
-  push:
-    branches:
-      - prod
-
-jobs:
-
-  deploy:
-
-    runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: aws-infra
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Validate
-        run: terraform validate
-
-      - name: Terraform Plan
-        run: terraform plan
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve
-
-
-name: Deploy Lambda
-
-on:
   workflow_dispatch:
     inputs:
-
       environment:
+        description: "Select environment"
+        required: true
         type: choice
         options:
           - dev
@@ -57,6 +13,8 @@ on:
           - prod
 
       operation:
+        description: "Select operation"
+        required: true
         type: choice
         options:
           - plan
@@ -65,99 +23,110 @@ on:
           - destroy
 
       region:
-        type: choice
+        description: "AWS Region"
+        required: true
         default: ap-south-1
+        type: choice
         options:
           - ap-south-1
 
 env:
-
   LAMBDA_NAME: hello-lambda-${{ github.event.inputs.environment }}
-
   S3_BUCKET: lambda-artifacts-demo-${{ github.event.inputs.environment }}
-
   S3_KEY: lambda-packages/hello-lambda-${{ github.event.inputs.environment }}.zip
 
 permissions:
-
-  id-token: write
-
   contents: read
 
 jobs:
-
   deploy:
-
     runs-on: ubuntu-latest
 
     steps:
-
+      ####################################################
+      # Checkout Repository
+      ####################################################
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      ###################################################
-      ## Configure AWS Credentials later
-      ###################################################
+      ####################################################
+      # Configure AWS Credentials
+      ####################################################
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.region }}
 
+      ####################################################
+      # Verify AWS Authentication
+      ####################################################
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
+
+      ####################################################
+      # Setup Terraform
+      ####################################################
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      ###################################################
-      ## Package Lambda
-      ###################################################
-
+      ####################################################
+      # Package Lambda
+      ####################################################
       - name: Package Lambda
-
         if: ${{ github.event.inputs.operation == 'apply' || github.event.inputs.operation == 'update' }}
-
         run: |
-
           cd aws-lambda/hello_lambda
 
-          sh install.sh
+          chmod +x install.sh
+          ./install.sh
 
           zip -r hello-lambda-${{ github.event.inputs.environment }}.zip .
 
           aws s3 cp \
-          hello-lambda-${{ github.event.inputs.environment }}.zip \
-          s3://${{ env.S3_BUCKET }}/${{ env.S3_KEY }}
+            hello-lambda-${{ github.event.inputs.environment }}.zip \
+            s3://${{ env.S3_BUCKET }}/${{ env.S3_KEY }}
 
-      ###################################################
-      ## Terraform
-      ###################################################
-
-      - name: Terraform
-
+      ####################################################
+      # Terraform
+      ####################################################
+      - name: Terraform Init
         if: ${{ github.event.inputs.operation != 'update' }}
+        working-directory: aws-infra/lambda
+        run: terraform init
 
-        run: |
+      - name: Terraform Format
+        if: ${{ github.event.inputs.operation != 'update' }}
+        working-directory: aws-infra/lambda
+        run: terraform fmt
 
-          cd aws-infra/lambda
+      - name: Terraform Validate
+        if: ${{ github.event.inputs.operation != 'update' }}
+        working-directory: aws-infra/lambda
+        run: terraform validate
 
-          terraform init
+      - name: Terraform Plan
+        if: ${{ github.event.inputs.operation == 'plan' }}
+        working-directory: aws-infra/lambda
+        run: terraform plan
 
-          if [[ "${{ github.event.inputs.operation }}" == "apply" || "${{ github.event.inputs.operation }}" == "destroy" ]]
+      - name: Terraform Apply
+        if: ${{ github.event.inputs.operation == 'apply' }}
+        working-directory: aws-infra/lambda
+        run: terraform apply -auto-approve
 
-          then
+      - name: Terraform Destroy
+        if: ${{ github.event.inputs.operation == 'destroy' }}
+        working-directory: aws-infra/lambda
+        run: terraform destroy -auto-approve
 
-            terraform ${{ github.event.inputs.operation }} -auto-approve
-
-          else
-
-            terraform plan
-
-          fi
-
-      ###################################################
-      ## Lambda Update
-      ###################################################
-
+      ####################################################
+      # Update Existing Lambda Code
+      ####################################################
       - name: Update Lambda Code
-
         if: ${{ github.event.inputs.operation == 'update' }}
-
         run: |
-
           aws lambda update-function-code \
             --function-name ${{ env.LAMBDA_NAME }} \
             --s3-bucket ${{ env.S3_BUCKET }} \
