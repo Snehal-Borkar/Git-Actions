@@ -41,3 +41,124 @@ jobs:
 
       - name: Terraform Apply
         run: terraform apply -auto-approve
+
+
+name: Deploy Lambda
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      environment:
+        type: choice
+        options:
+          - dev
+          - qa
+          - prod
+
+      operation:
+        type: choice
+        options:
+          - plan
+          - apply
+          - update
+          - destroy
+
+      region:
+        type: choice
+        default: ap-south-1
+        options:
+          - ap-south-1
+
+env:
+
+  LAMBDA_NAME: hello-lambda-${{ github.event.inputs.environment }}
+
+  S3_BUCKET: lambda-artifacts-demo-${{ github.event.inputs.environment }}
+
+  S3_KEY: lambda-packages/hello-lambda-${{ github.event.inputs.environment }}.zip
+
+permissions:
+
+  id-token: write
+
+  contents: read
+
+jobs:
+
+  deploy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      ###################################################
+      ## Configure AWS Credentials later
+      ###################################################
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      ###################################################
+      ## Package Lambda
+      ###################################################
+
+      - name: Package Lambda
+
+        if: ${{ github.event.inputs.operation == 'apply' || github.event.inputs.operation == 'update' }}
+
+        run: |
+
+          cd aws-lambda/hello_lambda
+
+          sh install.sh
+
+          zip -r hello-lambda-${{ github.event.inputs.environment }}.zip .
+
+          aws s3 cp \
+          hello-lambda-${{ github.event.inputs.environment }}.zip \
+          s3://${{ env.S3_BUCKET }}/${{ env.S3_KEY }}
+
+      ###################################################
+      ## Terraform
+      ###################################################
+
+      - name: Terraform
+
+        if: ${{ github.event.inputs.operation != 'update' }}
+
+        run: |
+
+          cd aws-infra/lambda
+
+          terraform init
+
+          if [[ "${{ github.event.inputs.operation }}" == "apply" || "${{ github.event.inputs.operation }}" == "destroy" ]]
+
+          then
+
+            terraform ${{ github.event.inputs.operation }} -auto-approve
+
+          else
+
+            terraform plan
+
+          fi
+
+      ###################################################
+      ## Lambda Update
+      ###################################################
+
+      - name: Update Lambda Code
+
+        if: ${{ github.event.inputs.operation == 'update' }}
+
+        run: |
+
+          aws lambda update-function-code \
+            --function-name ${{ env.LAMBDA_NAME }} \
+            --s3-bucket ${{ env.S3_BUCKET }} \
+            --s3-key ${{ env.S3_KEY }}
